@@ -57,16 +57,25 @@ git remote add upstream https://github.com/darktable-org/darktable.git   # for f
 
 From the `darktable` folder in the **UCRT64** shell:
 ```bash
-./build.sh --prefix /opt/darktable --build-type Release --build-generator Ninja --install
+./build.sh --prefix /opt/darktable --build-type Release --build-generator Ninja --install --enable-ai
 ```
 This compiles ~1000 targets (first time is the slow part) and installs to
 `C:\msys64\opt\darktable`. When it finishes you'll see `Installing: .../darktable.exe`.
+
+`--enable-ai` builds the AI features (AI masks, AI denoise; new in 5.6.0) — they are **off by
+default**, so don't omit the flag. At configure time CMake auto-downloads the ONNX Runtime
+DirectML package (hash-verified, ~30 MB; GPU inference via DirectX 12 on AMD/Intel/NVIDIA) and
+installs `onnxruntime*.dll` next to `darktable.exe`; the AI *models* download at runtime on
+first use. Verify with `darktable.exe --version` → `AI -> ENABLED`.
 
 Verify OpenCL sees your GPU (optional but recommended):
 ```bash
 /opt/darktable/bin/darktable-cltest.exe -d opencl 2>&1 | grep -iE "FINALLY|DEVICE:"
 ```
 You want a line ending in `AVAILABLE and ENABLED`. (First run compiles the kernel cache — up to ~1 min.)
+If you instead see `platform '...' is NOT active` and `PREFERENCE=NO is NOT AVAILABLE`, your GPU is
+fine — darktable **≥ 5.6.0 ships vendor OpenCL platforms disabled by default** (opt-in per platform).
+See **[OpenCL shows `NOT AVAILABLE`](#opencl-off)** below to switch it on; it's a one-time toggle.
 
 ## Step 5 — Install the Spektrafilm data pack
 
@@ -164,7 +173,7 @@ When you push updates to `spektrafilm` (or rebase it on newer upstream), on this
 cd ~/darktable                         # your clone
 git pull                               # fetch your fork's spektrafilm branch
 git submodule update --init            # in case submodule pins moved
-./build.sh --prefix /opt/darktable --build-type Release --build-generator Ninja --install
+./build.sh --prefix /opt/darktable --build-type Release --build-generator Ninja --install --enable-ai
 ```
 The pinned icon keeps working — it points at `/opt/darktable`, which `--install` refreshes.
 After editing the OpenCL kernel (`spektrafilm.cl`) specifically, clear the kernel cache once:
@@ -193,10 +202,40 @@ Then start the UCRT64 shell via `%USERPROFILE%\msys64\ucrt64.exe` and continue f
 ## Troubleshooting
 - **“libgtk-3-0.dll not found” when double-clicking:** `ucrt64\bin` isn't on PATH — use the
   Step 7 launcher (or the PATH alternative), don't run `darktable.exe` directly.
-- **OpenCL not enabled:** update your GPU driver; re-check with `darktable-cltest.exe -d opencl`.
-  darktable still works on CPU, just slower.
+- <a name="opencl-off"></a>**OpenCL shows `NOT AVAILABLE` / GPU not used:** darktable **≥ 5.6.0 ships
+  vendor OpenCL platforms disabled by default** (they're now opt-in) — so a fresh master/nightly
+  build behaves the same; this is *not* a driver problem. cltest printing `platform '...' is NOT
+  active` confirms it (a genuinely missing/old driver instead shows `found 0 platform` or `no
+  devices found`). Fix it once, with darktable **closed**, then re-run `darktable-cltest.exe -d opencl`:
+  1. **Enable the platform.** Easiest in the GUI: **Preferences → Processing → OpenCL** → tick your
+     platform (*AMD Accelerated Parallel Processing*, shown as "AMD ROCm"; or NVIDIA CUDA / Intel) and
+     make sure **"activate OpenCL support"** is on. Or edit `%LOCALAPPDATA%\darktable\darktablerc`
+     (or your `--configdir` path) directly:
+     ```ini
+     opencl=TRUE
+     clplatform_amdacceleratedparallelprocessing=TRUE   # use YOUR platform's key (see darktablerc)
+     ```
+  2. **Clear a stale per-device disable flag.** An older darktable (which *did* blacklist the AMD-APP
+     driver) may have left the device switched off, and that persists in `darktablerc`. Find the
+     `cldevice_v6_<platform><device>=...` line (e.g. `cldevice_v6_amdacceleratedparallelprocessinggfx1201=`)
+     — its **5th integer field is `disabled`**; set it to `0`:
+     ```ini
+     cldevice_v6_amdacceleratedparallelprocessinggfx1201=250 0 1 0 0 0.000 0.250
+     #                            micro_nap pin ev async ^disabled  advantage unified
+     ```
+  Success = `found 1 device`, your GPU under `DEVICE:`, and
+  `FINALLY: opencl PREFERENCE=YES is AVAILABLE and ENABLED`. darktable still runs (CPU-only, slower)
+  if you skip this. Updating your GPU driver only helps the separate "no platform/device at all" case.
 - **Module missing / “data pack not found”:** confirm Step 5 put `pack.json` etc. in the
   config dir darktable actually uses (default `%LOCALAPPDATA%\darktable\spektrafilm`, or your
   `--configdir` path if you set one).
 - **Build fails on a temp file / permission error:** make sure you're in the **UCRT64** shell
   (not a bare `cmd`), which sets a writable temp dir.
+- **`CMake Error ... Unsupported Windows architecture:` (nothing after the colon) with `--enable-ai`:**
+  the shell's `PROCESSOR_ARCHITECTURE` env var is empty (happens in some scripted/non-interactive
+  MSYS2 shells), so CMake can't pick the ONNX Runtime package. Fix and reconfigure:
+  ```bash
+  export PROCESSOR_ARCHITECTURE=AMD64
+  rm -f build/CMakeFiles/*/CMakeSystem.cmake   # the empty value is cached in the build tree
+  ./build.sh --prefix /opt/darktable --build-type Release --build-generator Ninja --install --enable-ai
+  ```
