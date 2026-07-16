@@ -232,6 +232,12 @@ struct sf_sim_t
      table-range code below). Defaults to the legacy fixed constants when the
      pack has no per-film grain entry (see sf_sim_build). */
   double grain_rms[3], grain_uniformity[3];
+  /* per-film halation preset (film_render_defaults[stock].halation): bounce
+     strength per channel and first-bounce radius. Encodes the stock's
+     antihalation layer (e.g. Vision3 with remjet ~0.015 red vs remjet-removed
+     CineStill ~0.30 red). Defaults to the legacy fixed constants when the
+     pack has no per-film halation entry (see sf_sim_build). */
+  double halation_strength[3], halation_sigma_um[3];
 
   /* print exposure (exact spectral path) */
   int has_print;
@@ -1735,6 +1741,20 @@ sf_sim_t *sf_sim_build(const sf_pack_t *pack, const sf_profile_t *film,
     sf_pack_film_grain(pack, film->stock, s->grain_rms, s->grain_uniformity,
                        p->grain_density_min);
   }
+  /* [cp] per-film halation preset (film_render_defaults[stock].halation);
+     falls back to the legacy fixed constants (SF_HALATION_LEGACY_* in
+     spektra_core.h) when the pack predates per-film halation or the stock
+     has no entry */
+  {
+    const double legacy_strength[3] = { 0.05, 0.015, 0.0 };
+    for(int c = 0; c < 3; c++)
+    {
+      s->halation_strength[c] = legacy_strength[c];
+      s->halation_sigma_um[c] = 65.0;
+    }
+    sf_pack_film_defaults(pack, film->stock, NULL, NULL, NULL, NULL,
+                          s->halation_strength, s->halation_sigma_um, NULL, NULL, NULL);
+  }
   /* [cp] coupler matrix: donor row -> receiver column, scaled by amount */
   s->couplers_active = p->couplers_active;
   {
@@ -2339,7 +2359,11 @@ sf_sim_gpu_t *sf_sim_gpu_export(const sf_sim_t *s)
     g->grain_uniformity[c] = (float)s->grain_uniformity[c];
     /* self-consistent with g->film_dmax: see sf_sim_film_grain3 */
     g->grain_dmin[c] = (float)s->film_dmin[c];
+    g->halation_strength[c] = (float)s->halation_strength[c];
   }
+  /* per-channel sigmas are uniform in every known preset; the GPU blur is a
+     single float4 pass, so export the red-channel radius */
+  g->halation_sigma_um = (float)s->halation_sigma_um[0];
   g->film_positive = s->film_positive;
   g->couplers_active = s->couplers_active;
 
@@ -2454,5 +2478,15 @@ void sf_sim_film_grain3(const sf_sim_t *sim, float rms[3], float uniformity[3], 
        biases the particle count — see sf_grain_delta_dmax. */
     dmin[c] = sim ? (float)sim->film_dmin[c] : legacy_dmin[c];
   }
+}
+
+void sf_sim_film_halation3(const sf_sim_t *sim, float strength[3], float *sigma_um)
+{
+  /* matches the pre-data-driven hardcoded constants (0.05/0.015/0 at 65 um) */
+  static const float legacy_strength[3] = { 0.05f, 0.015f, 0.0f };
+  for(int c = 0; c < 3; c++)
+    strength[c] = sim ? (float)sim->halation_strength[c] : legacy_strength[c];
+  /* per-channel sigmas are uniform in every known preset; expose one radius */
+  if(sigma_um) *sigma_um = sim ? (float)sim->halation_sigma_um[0] : 65.0f;
 }
 

@@ -153,6 +153,10 @@ typedef struct sf_sim_gpu_t
      pack): RMS-granularity, uniformity and density floor, replacing the
      earlier one-size-fits-all constants */
   float grain_rms[3], grain_uniformity[3], grain_dmin[3];
+  /* per-film halation preset (film_render_defaults[stock].halation): bounce
+     strength per channel + first-bounce radius (sigmas are uniform across
+     channels in every known preset, so a single radius is exported) */
+  float halation_strength[3], halation_sigma_um;
   /* output gamut compression */
   int out_compress; /* sf_output_compress_t */
   float out_rgb2xyz[9], out_xyz2rgb[9];
@@ -170,6 +174,10 @@ void sf_sim_film_dmax3(const sf_sim_t *sim, float dmax[3]);
    falls back to the legacy fixed constants (SF_GRAIN_LEGACY_* in
    spektra_core.h) when sim is NULL or the pack predates per-film grain. */
 void sf_sim_film_grain3(const sf_sim_t *sim, float rms[3], float uniformity[3], float dmin[3]);
+/* per-film halation preset (strength per channel, first-bounce radius in um);
+   falls back to the legacy fixed constants (0.05/0.015/0 at 65 um) when sim
+   is NULL or the pack predates per-film halation */
+void sf_sim_film_halation3(const sf_sim_t *sim, float strength[3], float *sigma_um);
 bool sf_pack_film_grain(const sf_pack_t *pack, const char *film_stock,
                         double rms[3], double uniformity[3], double density_min[3]);
 #define SF_COUPLER_BLUR_UM 20.0 /* gaussian core default when pack lacks it */

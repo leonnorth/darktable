@@ -135,7 +135,7 @@ void sf_boost_highlights(float *const raw, const int w, const int h, const float
 }
 
 void sf_halation(float *const raw, const int w, const int h, const double pixel_um, const float amount,
-                 const float spatial_scale)
+                 const float spatial_scale, const float strength[3], const float sigma_um)
 {
   if(amount <= 0.0f) return;
 
@@ -146,10 +146,11 @@ void sf_halation(float *const raw, const int w, const int h, const double pixel_
   /* tail = sum of three Gaussians (amplitude, radius multiplier) */
   static const double tail_amp[3] = { 0.1633, 0.6496, 0.1870 };
   static const double tail_rat[3] = { 0.5360, 1.5236, 2.7684 };
-  /* per-channel halation strength: red/green only, blue has none on real film */
+  /* per-channel halation strength from the stock's antihalation preset
+     (film_render_defaults[stock].halation in the pack), red-dominant */
   const double eff = pow((double)amount, 1.3);
-  const double a_tot[3] = { 0.05 * eff, 0.015 * eff, 0.0 };
-  const double first_sigma_um = 65.0; /* base bounce radius */
+  const double a_tot[3] = { strength[0] * eff, strength[1] * eff, strength[2] * eff };
+  const double first_sigma_um = (double)sigma_um; /* base bounce radius */
   const double scl = fmax((double)spatial_scale, 1e-3); /* halation size multiplier */
   const int n_bounces = 3;
   const double rho = 0.5;             /* bounce decay */
@@ -193,7 +194,7 @@ void sf_halation(float *const raw, const int w, const int h, const double pixel_
   }
 
   /* --- stage 2: multi-bounce halation --- */
-  if(a_tot[0] > 0.0 || a_tot[1] > 0.0)
+  if(a_tot[0] > 0.0 || a_tot[1] > 0.0 || a_tot[2] > 0.0)
   {
     double decay[8], dsum = 0.0;
     for(int k = 1; k <= n_bounces; k++)

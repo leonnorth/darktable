@@ -109,6 +109,15 @@ Get the exporter script `spektrafilm_export_data.py` — either copy it from
 ```
 Success prints `wrote ...\pack.json` and `copied NN profiles`.
 
+Finally, apply the local pack tweaks — adds the **CineStill 800T** profile (Vision3 500T with
+the remjet-removed halation preset; upstream ships no CineStill stock) and recalibrates the
+cine/Verita grain values onto the still-stock scale. Re-run after every pack regeneration
+(any Python works, no venv needed):
+```powershell
+python C:\repos\DT_Spektrafilm\darktable\tools\spektrafilm_pack_tweaks.py
+```
+(Pass `-d <dir>` if your pack lives in a `--configdir` location instead of the default.)
+
 ## Step 6 — First run & verify
 
 From the **UCRT64** shell:

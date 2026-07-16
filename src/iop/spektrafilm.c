@@ -90,7 +90,15 @@ DT_MODULE_INTROSPECTION(2, dt_iop_spektrafilm_params_t)
 /* Spatial-scale constants, micrometres on film unless noted (see the LUT
    module for the full rationale; these are shared with modify_roi_in() and
    tiling_callback() so the halo math stays in sync). */
+/* upper bound across the pack's per-film halation presets (still stocks use
+   65 um, cine 50 um) — used only for ROI padding, where the sim (and thus the
+   per-film radius from film_render_defaults) is not available yet */
 #define SF_HALATION_FIRST_SIGMA_UM 65.0f
+
+/* stock rendered when film_hash is 0 (fresh instance). The GUI combobox
+   preselection in gui_update MUST use the same preference as the pipe's
+   sf_resolve_stock call, or the display and the render disagree */
+#define SF_DEFAULT_FILM_STOCK "kodak_portra_400"
 #define SF_HALATION_PSF_SIGMAS 1.7320508f /* sqrt(3) */
 #define SF_GRAIN_BLUR_FACTOR 0.8f
 #define SF_GRAIN_SIZE_MIN 0.05f
@@ -689,7 +697,7 @@ static sf_sim_t *_ensure_sim(dt_iop_spektrafilm_data_t *d,
   sf_prof_entry_t entries[SF_MAX_PROFILES];
   const int n = sf_scan_profiles(entries, SF_MAX_PROFILES);
   char film_stock[SF_NAME_LEN] = { 0 }, paper_stock[SF_NAME_LEN] = { 0 };
-  if(!sf_resolve_stock(entries, n, p->film_hash, FALSE, "kodak_portra_400", film_stock,
+  if(!sf_resolve_stock(entries, n, p->film_hash, FALSE, SF_DEFAULT_FILM_STOCK, film_stock,
                        sizeof film_stock))
   {
     g_strlcpy(d->sim_error, "no filming profiles found", sizeof d->sim_error);
@@ -813,8 +821,12 @@ static sf_sim_t *_ensure_sim(dt_iop_spektrafilm_data_t *d,
 static float _max_halo_sigma(const dt_iop_spektrafilm_params_t *p, float pixel_um)
 {
   const float inv_um = 1.0f / fmaxf(pixel_um, 1e-3f);
+  /* halation halo: the per-film first-bounce radius is unknown before the sim
+     exists, so assume the largest preset value (65 um, SF_HALATION_FIRST_SIGMA_UM);
+     scale by the user's halation-size slider like diffusion does below */
   const float hal = (p->halation_on && p->halation_amount > 0.0f)
-                        ? SF_HALATION_FIRST_SIGMA_UM * SF_HALATION_PSF_SIGMAS * inv_um
+                        ? SF_HALATION_FIRST_SIGMA_UM * SF_HALATION_PSF_SIGMAS
+                              * fmaxf(p->halation_scale, 1e-3f) * inv_um
                         : 0.0f;
   const float diff = p->diffusion_on ? SF_DIFFUSION_BLOOM_LAMBDA_MAX_UM * 1.41421356f
                                            * p->diffusion_scale * inv_um
@@ -939,7 +951,12 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
     sf_diffusion_filter(plane, w, h, (double)pixel_um, d->p.diffusion_strength,
                         d->p.diffusion_scale, d->p.diffusion_warmth);
   if(d->p.halation_on && d->p.halation_amount > 0.0f)
-    sf_halation(plane, w, h, (double)pixel_um, d->p.halation_amount, d->p.halation_scale);
+  {
+    float hstr[3], hsig;
+    sf_sim_film_halation3(sim, hstr, &hsig); /* per-film antihalation preset */
+    sf_halation(plane, w, h, (double)pixel_um, d->p.halation_amount, d->p.halation_scale, hstr,
+                hsig);
+  }
 
   /* 3) film development: log exposure, DIR coupler inhibition (the correction
         field diffuses in the emulsion: gaussian, sigma 20 um as in the
@@ -1262,7 +1279,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
                                            CLARG(ws_r), CLARG(ws_g), CLARG(ws_b));
     SF_CL_STEP("scatter combine");
 
-    const float first_sigma = SF_HALATION_FIRST_SIGMA_UM;
+    const float first_sigma = g->halation_sigma_um; /* per-film antihalation preset */
     const int N = 3;
     const float rho = 0.5f;
     float dsum = 0.f, dec[3];
@@ -1287,7 +1304,9 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
       SF_CL_STEP("halation bounce accum");
     }
     const float h_eff = powf(d->p.halation_amount, 1.3f);
-    const float a_r = 0.05f * h_eff, a_g = 0.015f * h_eff, a_b = 0.0f;
+    const float a_r = g->halation_strength[0] * h_eff;
+    const float a_g = g->halation_strength[1] * h_eff;
+    const float a_b = g->halation_strength[2] * h_eff;
     err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_halation_apply, w, h, CLARG(plane),
                                            CLARG(acc), CLARG(w), CLARG(h), CLARG(a_r),
                                            CLARG(a_g), CLARG(a_b));
@@ -1537,9 +1556,14 @@ void gui_update(dt_iop_module_t *self)
     for(int k = 0; k < g->n_papers; k++)
       dt_bauhaus_combobox_add(g->paper, g->entries[g->paper_entry[k]].name);
 
+  /* mirror the pipe's sf_resolve_stock: hash match first, then the default
+     stock, then entry 0 — a plain fi=0 here would DISPLAY the alphabetically
+     first stock while the pipe renders SF_DEFAULT_FILM_STOCK */
   int fi = 0;
   for(int f = 0; f < g->n_films; f++)
-    if(g->entries[g->film_entry[f]].hash == p->film_hash) fi = f;
+    if(!strcmp(g->entries[g->film_entry[f]].stock, SF_DEFAULT_FILM_STOCK)) fi = f;
+  for(int f = 0; f < g->n_films; f++)
+    if(p->film_hash && g->entries[g->film_entry[f]].hash == p->film_hash) fi = f;
   dt_bauhaus_combobox_set(g->film, fi);
   int pi = 0;
   const char *target = (fi < g->n_films) ? g->entries[g->film_entry[fi]].target_print : NULL;
@@ -1558,6 +1582,7 @@ void gui_update(dt_iop_module_t *self)
      click a no-op (field already has that value -> no history item) and
      module reset never updates them. */
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->scan_film), p->scan_film);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->print_auto_exposure), p->print_auto_exposure);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->halation_on), p->halation_on);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->diffusion_on), p->diffusion_on);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->grain_on), p->grain_on);

@@ -31,7 +31,8 @@
 /* Spatial effects implemented in spektra_core.c (they use dt_gaussian and so
    need darktable linkage; everything else in this header is inline). */
 void sf_blur_plane3(float *buf, int w, int h, float sigma, float *plane);
-void sf_halation(float *raw, int w, int h, double pixel_um, float amount, float spatial_scale);
+void sf_halation(float *raw, int w, int h, double pixel_um, float amount, float spatial_scale,
+                 const float strength[3], float sigma_um);
 void sf_boost_highlights(float *raw, int w, int h, float boost_ev, float boost_range,
                          float protect_ev);
 void sf_diffusion_filter(float *raw, int w, int h, double pixel_um, float strength,
